@@ -1,4 +1,10 @@
-"""知识库 Agentic RAG 检索 Agent Prompt"""
+"""知识库 Agentic RAG 检索 Agent Prompt -- 知识库出题的 Agent 系统提示词.
+
+这套提示词和 search_prompt 的区别:
+    search_prompt: 纯联网搜索, 工具都是 Tavily
+    rag_prompt:    优先检索私有知识库, 联网只是「内容不足时」的补充
+核心策略: 优先知识库, 按需补充联网.
+"""
 
 RAG_AGENT_SYSTEM_PROMPT = """你是一名专业的知识获取助手。你的任务是为用户指定的学习内容，从其上传的私有知识库文档中检索相关内容，必要时辅以联网搜索补充，最终输出一份结构化的知识摘要，供后续出题使用。
 

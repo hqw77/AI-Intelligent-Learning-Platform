@@ -1,4 +1,7 @@
-"""题目配图生成记录数据访问层（用于每日生图次数限制）"""
+"""题目配图生成记录数据访问层 -- 封装 image_generation_logs 表.
+
+这张表记录「谁在哪天生成了几张图」, 用于每日生图次数限制 (控成本).
+"""
 
 from __future__ import annotations
 
@@ -12,9 +15,10 @@ logger = structlog.get_logger()
 
 
 async def get_today_usage_count(user_id: int) -> int:
-    """获取用户当天（服务器本地日期）已成功生成的图片数量。
+    """获取用户当天已成功生成的图片数量.
 
-    无 MySQL 连接（本地未配置数据库）时视为不限制，返回 0。
+    用 CURDATE() 拿服务器本地日期, 统计今天 (>= 今天 0 点) 的生图记录.
+    无 MySQL 连接 (本地未配置数据库) 时视为不限制, 返回 0.
     """
     pool = get_mysql_pool()
     if pool is None:
@@ -36,7 +40,7 @@ async def log_image_generation(
     question_id: Optional[str],
     image_url: str,
 ) -> None:
-    """记录一次成功的生图，用于每日次数统计。"""
+    """记录一次成功的生图, 用于每日次数统计."""
     pool = get_mysql_pool()
     if pool is None:
         return

@@ -1,4 +1,8 @@
-"""异步任务数据访问层"""
+"""异步任务数据访问层 -- 封装 quiz_tasks 表的 SQL 操作.
+
+quiz_tasks 表存「异步出题任务」的状态, 前端轮询就是查这张表.
+状态机: pending -> running -> completed / failed.
+"""
 
 from __future__ import annotations
 
@@ -19,6 +23,7 @@ async def create_task(
     question_count: int,
     difficulty: str,
 ) -> None:
+    """创建任务记录 (状态默认 pending)."""
     pool = get_mysql_pool()
     if pool is None:
         return
@@ -37,6 +42,7 @@ async def update_task_status(
     result_json: Optional[dict] = None,
     error_message: Optional[str] = None,
 ) -> None:
+    """更新任务状态 (running/completed/failed), 可选带结果或错误信息."""
     pool = get_mysql_pool()
     if pool is None:
         return
@@ -54,10 +60,12 @@ async def update_task_status(
 
 
 async def get_task(task_id: str) -> Optional[dict]:
+    """查询任务, 返回状态 + 结果 + 错误信息 (result_json 自动反序列化)."""
     pool = get_mysql_pool()
     if pool is None:
         return None
     async with pool.acquire() as conn:
+        # 用 DictCursor 让查询结果直接是 dict (key 是列名), 不用手动按列号取值
         async with conn.cursor(aiomysql.DictCursor) as cur:
             await cur.execute(
                 "SELECT task_id, status, result_json, error_message FROM quiz_tasks WHERE task_id = %s",
@@ -70,5 +78,5 @@ async def get_task(task_id: str) -> Optional[dict]:
             return row
 
 
-# Need the import for DictCursor
+# 上面的 get_task 用了 aiomysql.DictCursor, 所以需要 import aiomysql
 import aiomysql

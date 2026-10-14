@@ -1,7 +1,15 @@
-"""报告 Prompt V1"""
+"""报告 Prompt -- 让 DeepSeek 生成复盘报告的提示词模板.
 
+和 quiz_prompt 同一套路: 角色设定 + 硬性 JSON 约束 + 结构模板.
+区别: 输入是答题记录, 输出是报告 (掌握点/薄弱点/总结/建议/金句).
+"""
+
+# 系统提示词: 定角色 (学习复盘教练) + 硬性 JSON 约束
 REPORT_SYSTEM_PROMPT = "你是一名学习复盘教练。你只能输出合法 JSON，不要输出任何 JSON 之外的内容，包括 markdown、注释、说明文字。"
 
+# 用户提示词: 报告要求 + JSON 结构模板.
+# {topic}, {quiz_json}, {answer_records}, {score_summary} 是占位符,
+# 会被 report_chain 用真实数据替换.
 REPORT_HUMAN_PROMPT = """请根据用户本次闯关答题记录生成一份结构化复盘报告。
 
 要求：

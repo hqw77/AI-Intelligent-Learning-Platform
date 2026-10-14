@@ -1,4 +1,8 @@
-"""知识库文档数据访问层"""
+"""知识库文档数据访问层 -- 封装 kb_documents 表的 SQL 操作.
+
+统一模式: get_mysql_pool() 拿连接 -> 执行 SQL -> 返回结果 (pool 为 None 时降级返回).
+注意: 查询都带 user_id 条件, 保证只能操作自己的文档 (数据隔离).
+"""
 
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ async def create_document(
     file_type: str,
     file_size: int,
 ) -> None:
+    """新建文档记录 (状态默认 processing)."""
     pool = get_mysql_pool()
     if pool is None:
         return
@@ -36,6 +41,7 @@ async def update_document_status(
     chunk_count: Optional[int] = None,
     error_message: Optional[str] = None,
 ) -> None:
+    """更新文档状态 (processing -> ready/failed) 及分块数/错误信息."""
     pool = get_mysql_pool()
     if pool is None:
         return
@@ -48,7 +54,7 @@ async def update_document_status(
 
 
 async def get_document(doc_id: str, user_id: int) -> Optional[dict]:
-    """获取文档详情，仅当文档属于该用户时返回。"""
+    """获取文档详情, 仅当文档属于该用户时返回."""
     pool = get_mysql_pool()
     if pool is None:
         return None
@@ -77,6 +83,7 @@ async def get_document(doc_id: str, user_id: int) -> Optional[dict]:
 
 
 async def list_documents(user_id: int) -> list[dict]:
+    """获取用户的文档列表 (按创建时间倒序)."""
     pool = get_mysql_pool()
     if pool is None:
         return []
@@ -105,6 +112,7 @@ async def list_documents(user_id: int) -> list[dict]:
 
 
 async def count_documents(user_id: int) -> int:
+    """统计用户的文档数量 (用于上传数量上限校验)."""
     pool = get_mysql_pool()
     if pool is None:
         return 0
@@ -119,6 +127,7 @@ async def count_documents(user_id: int) -> int:
 
 
 async def delete_document(doc_id: str, user_id: int) -> None:
+    """删除文档记录 (仅当文档属于该用户)."""
     pool = get_mysql_pool()
     if pool is None:
         return

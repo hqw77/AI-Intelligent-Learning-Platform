@@ -1,13 +1,15 @@
-"""题目配图生成服务
+"""题目配图生成服务 -- 给题目生成 AI 配图.
 
-负责：
+这个文件是干什么的:
+出题时如果用户开了「生成配图」, 这里负责给每道题配一张图, 流程:
 1. 根据题目内容构建生图 Prompt
-2. 调用阿里云百炼 qwen-image-2.0 模型同步生成图片（多题并发）
-3. 下载生成的图片并上传至腾讯云 COS，得到永久可访问 URL
-4. 应用「每人每天生图次数」限额
+2. 调用阿里云百炼 qwen-image-2.0 模型生成图片 (多题并发)
+3. 下载生成的图片并上传腾讯云 COS, 得到永久可访问 URL
+4. 应用「每人每天生图次数」限额 + 并发控制 (控成本)
 
-生图失败（单张或全部）不应影响出题主流程，因此本模块的对外入口
-`generate_images_for_quiz` 永远不会抛出异常。
+关键设计 (面试可提):
+生图失败 (单张或全部) 绝不影响出题主流程 -- 本模块的对外入口
+generate_images_for_quiz 永远不会抛异常, 失败就返回不带图的题目.
 """
 
 from __future__ import annotations
@@ -26,14 +28,15 @@ from app.services.cos_service import upload_image_bytes
 
 logger = structlog.get_logger()
 
-IMAGE_DOWNLOAD_TIMEOUT = 30.0
+IMAGE_DOWNLOAD_TIMEOUT = 30.0  # 下载生成图片的超时 (秒)
 
 
 def _derive_image_base_url(dashscope_base_url: str) -> str:
-    """从 OpenAI 兼容模式的 dashscope_base_url 派生原生 DashScope API 地址。
+    """从 OpenAI 兼容模式的 dashscope_base_url 派生原生 DashScope 生图 API 地址.
 
-    例如 https://xxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-    -> https://xxx.cn-beijing.maas.aliyuncs.com/api/v1
+    例: https://xxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+     -> https://xxx.cn-beijing.maas.aliyuncs.com/api/v1
+    (Embedding 走兼容模式, 生图走原生模式, 地址不同)
     """
     if dashscope_base_url.endswith("/compatible-mode/v1"):
         return dashscope_base_url[: -len("/compatible-mode/v1")] + "/api/v1"
@@ -41,7 +44,7 @@ def _derive_image_base_url(dashscope_base_url: str) -> str:
 
 
 def build_image_prompt(question: Question) -> str:
-    """根据题目内容构建生图 Prompt。"""
+    """根据题目内容构建生图 Prompt (告诉模型画什么)."""
     return (
         f"为一道学习闯关题目生成配图。知识点：{question.knowledge_point}。"
         f"题目内容：{question.stem}。\n"
@@ -52,12 +55,13 @@ def build_image_prompt(question: Question) -> str:
 
 
 def _call_image_model_sync(prompt: str) -> str:
-    """同步调用 DashScope 千问-文生图模型，返回图片临时 URL（阻塞调用，需在线程中运行）。"""
+    """同步调用 DashScope 千问-文生图模型, 返回图片临时 URL (阻塞调用, 需在线程中运行)."""
     import dashscope
     from dashscope import MultiModalConversation
 
     settings = get_settings()
 
+    # 生图 API 地址: 优先用配置的专用地址, 否则从兼容模式地址派生
     base_url = settings.dashscope_image_base_url or _derive_image_base_url(settings.dashscope_base_url)
     if base_url:
         dashscope.base_http_api_url = base_url
@@ -68,8 +72,8 @@ def _call_image_model_sync(prompt: str) -> str:
         messages=[{"role": "user", "content": [{"text": prompt}]}],
         result_format="message",
         size=settings.image_gen_size,
-        watermark=False,
-        prompt_extend=True,
+        watermark=False,       # 不要水印
+        prompt_extend=True,    # 让模型自动扩展 prompt
     )
 
     if response.status_code != 200:
@@ -79,6 +83,7 @@ def _call_image_model_sync(prompt: str) -> str:
 
 
 async def _download_image(url: str) -> bytes:
+    """下载图片 (临时 URL 会过期, 要尽快下载)."""
     async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -86,12 +91,16 @@ async def _download_image(url: str) -> bytes:
 
 
 async def generate_image_for_question(question: Question, quiz_id: str) -> Optional[str]:
-    """为单道题目生成配图并上传至 COS，返回永久 URL；任何失败都返回 None（不抛异常）。"""
+    """为单道题目生成配图并上传 COS, 返回永久 URL; 任何失败都返回 None (不抛异常)."""
     try:
+        # 1) 构建生图 prompt
         prompt = build_image_prompt(question)
+        # 2) 调生图模型 (同步阻塞, 用 to_thread 转到线程池避免卡事件循环)
         temp_url = await asyncio.to_thread(_call_image_model_sync, prompt)
+        # 3) 下载临时图
         image_bytes = await _download_image(temp_url)
 
+        # 4) 上传 COS 得到永久 URL (key 按 quiz_id/question_id 组织目录)
         settings = get_settings()
         key = f"{settings.cos_upload_prefix}{quiz_id}/{question.id}_{uuid.uuid4().hex[:8]}.png"
         return await upload_image_bytes(image_bytes, key)
@@ -110,15 +119,18 @@ async def generate_images_for_quiz(
     user_id: Optional[int],
     quiz_id: str,
 ) -> tuple[dict[str, str], Optional[str]]:
-    """为一批题目并发生成配图，返回 (question_id -> image_url 映射, 提示信息)。
+    """为一批题目并发生成配图, 返回 (question_id -> image_url 映射, 提示信息).
 
-    该函数不会抛出异常：任何内部错误都会被吞掉并转化为提示信息或直接忽略配图。
+    该函数不会抛异常: 任何内部错误都被吞掉并转化为提示信息或直接忽略配图.
+    含两个成本控制: 每日额度限制 (20 张/天) + 信号量并发控制 (5 路并发).
     """
     settings = get_settings()
 
+    # 未登录不能生图 (生图有成本, 且需要按用户记额度)
     if user_id is None:
         return {}, "登录后才能使用生成图片功能，本次出题未生成配图"
 
+    # 查今天已用了多少额度
     try:
         used = await image_repository.get_today_usage_count(user_id)
     except Exception as e:
@@ -130,6 +142,7 @@ async def generate_images_for_quiz(
     if remaining <= 0:
         return {}, f"今日生成图片次数已用完（{settings.image_gen_daily_limit} 张/天），本次出题未生成配图"
 
+    # 只给前 remaining 道题配图 (额度不够时后面的题不配)
     target_questions = questions[:remaining]
     notice = None
     if len(target_questions) < len(questions):
@@ -138,6 +151,7 @@ async def generate_images_for_quiz(
             "其余题目未配图"
         )
 
+    # 信号量: 限制同时最多 5 路生图并发 (控成本 + 防限流)
     semaphore = asyncio.Semaphore(settings.image_gen_max_concurrency)
 
     async def _run(q: Question) -> tuple[str, Optional[str]]:
@@ -145,14 +159,16 @@ async def generate_images_for_quiz(
             url = await generate_image_for_question(q, quiz_id)
             return q.id, url
 
+    # 并发生成所有目标题的配图
     results = await asyncio.gather(*(_run(q) for q in target_questions))
 
     image_map: dict[str, str] = {}
     for question_id, url in results:
-        if not url:
+        if not url:  # 这题生图失败, 跳过 (不影响其他题)
             continue
         image_map[question_id] = url
         try:
+            # 记录这次生图, 用于每日额度统计
             await image_repository.log_image_generation(user_id, quiz_id, question_id, url)
         except Exception as e:
             logger.warning("image_usage_log_failed", user_id=user_id, error=str(e))
